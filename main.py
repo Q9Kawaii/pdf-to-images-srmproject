@@ -5,20 +5,25 @@ import os, re, io
 from PIL import Image
 from uuid import uuid4
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
+# ✅ CORS middleware for Next.js
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For dev, use wildcard
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Path to your desired local output folder
-OUTPUT_DIR = os.path.expanduser("~/Desktop/pdf_debug_output")  # You can change this
+# ✅ Directory for saving output images (relative, so Render can serve it)
+OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ✅ Serve the output folder publicly at /output
+app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 
 @app.post("/split-pdf")
 async def split_pdf(file: UploadFile = File(...)):
@@ -68,6 +73,9 @@ async def split_pdf(file: UploadFile = File(...)):
         path = os.path.join(OUTPUT_DIR, filename)
         combined.save(path, "JPEG")
 
-        result.append({ "regNo": reg_no, "imagePath": path })
+        # ✅ Construct the public URL to serve this file
+        public_url = f"https://pdf-to-images-srmproject.onrender.com/output/{filename}"
+
+        result.append({ "regNo": reg_no, "imagePath": public_url })
 
     return JSONResponse(content={ "status": "success", "images": result })
