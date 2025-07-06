@@ -4,8 +4,17 @@ import fitz  # PyMuPDF
 import os, re, io
 from PIL import Image
 from uuid import uuid4
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For dev, use wildcard
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ✅ Path to your desired local output folder
 OUTPUT_DIR = os.path.expanduser("~/Desktop/pdf_debug_output")  # You can change this
