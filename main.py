@@ -182,4 +182,22 @@ async def split_pdf_fast(file: UploadFile = File(...)):
 
             result.append({ 
                 "regNo": reg_no, 
-                "imagePath": public_
+                "imagePath": public_url,
+                "pagesProcessed": 1,
+                "totalPages": len(pages)
+            })
+
+        pdf.close()
+        
+        return JSONResponse(content={ 
+            "status": "success", 
+            "images": result,
+            "totalStudents": len(result)
+        })
+        
+    except Exception as e:
+        print(f"Error processing PDF: {str(e)}")
+        return JSONResponse(
+            content={"status": "error", "message": str(e)}, 
+            status_code=500
+        )
