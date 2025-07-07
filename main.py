@@ -68,7 +68,8 @@ async def split_pdf(file: UploadFile = File(...)):
         for img in images:
             combined.paste(img, (0, y_offset))
             y_offset += img.height
-
+        cropped_height = int(combined.height / 2)
+        combined = combined.crop((0, 0, combined.width, cropped_height))
         filename = f"{reg_no}_{uuid4().hex[:6]}.jpg"
         path = os.path.join(OUTPUT_DIR, filename)
         combined.save(path, "JPEG")
