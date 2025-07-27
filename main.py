@@ -1,15 +1,18 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-import fitz  # PyMuPDF
-import os, re, io
-from PIL import Image
-from uuid import uuid4
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import fitz  # PyMuPDF
+import os
+import re
+import io
+from PIL import Image
+from uuid import uuid4
+
 app = FastAPI()
 
-# ✅ CORS middleware for Next.js
+# ✅ Allow CORS for frontend access (e.g., from Next.js)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,186 +21,100 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Directory for saving output images (relative, so Render can serve it)
+# ✅ Setup output directory for generated images
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ✅ Serve the output folder publicly at /output
+# ✅ Serve the output directory at /output
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 
-# ✅ Health check endpoint
-@app.get("/")
-async def root():
-    return {"status": "healthy", "message": "PDF to Images API is running"}
+BASE_URL = os.getenv("BACKEND_BASE_URL") # No default, must be set via env var
+if not BASE_URL:
+    raise ValueError("BACKEND_BASE_URL environment variable is not set. This service requires it to run.")
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "timestamp": "2025-07-07"}
 
 @app.post("/split-pdf")
 async def split_pdf(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        pdf = fitz.open(stream=contents, filetype="pdf")
+    contents = await file.read()
+    pdf = fitz.open(stream=contents, filetype="pdf")
 
-        student_chunks = []
-        current_chunk = []
-        current_reg = None
+    student_chunks = []
+    current_chunk = []
+    current_reg = None
 
-        regno_pattern = re.compile(r"Registration\s*Number\s*:\s*(RA\d+)", re.IGNORECASE)
+    # Pattern to detect registration numbers like RAXXXXXXXX
+    regno_pattern = re.compile(r"Registration\s*Number\s*:\s*(RA\d+)", re.IGNORECASE)
 
-        # ✅ Parse PDF and group pages by registration number
-        for page_num in range(len(pdf)):
-            page = pdf[page_num]
-            text = page.get_text()
+    # ✅ Group pages by registration number
+    for page_num in range(len(pdf)):
+        page = pdf[page_num]
+        text = page.get_text()
 
-            match = regno_pattern.search(text)
-            if match:
-                if current_chunk and current_reg:
-                    student_chunks.append((current_reg, current_chunk.copy()))
-                current_reg = match.group(1)
-                current_chunk = [page_num]
-            else:
-                if current_reg:
-                    current_chunk.append(page_num)
+        match = regno_pattern.search(text)
+        if match:
+            if current_chunk and current_reg:
+                student_chunks.append((current_reg, current_chunk.copy()))
+            current_reg = match.group(1)
+            current_chunk = [page_num]
+        else:
+            if current_reg:
+                current_chunk.append(page_num)
 
-        # Add the last student chunk
-        if current_chunk and current_reg:
-            student_chunks.append((current_reg, current_chunk.copy()))
+    # Append the last chunk if any
+    if current_chunk and current_reg:
+        student_chunks.append((current_reg, current_chunk.copy()))
 
-        result = []
+    result = []
+    MAX_FILE_SIZE_BYTES = 80 * 1024  # 80 KB
+    IMAGE_DPI = 90
+    JPEG_QUALITY = 70
 
-        for reg_no, pages in student_chunks:
-            # ✅ SMART SELECTION: Use first page + every other page if multiple pages exist
-            if len(pages) == 1:
-                selected_pages = pages
-            elif len(pages) == 2:
-                # If only 2 pages, use both
-                selected_pages = pages
-            else:
-                # Take first page and every alternate page starting from page 2
-                selected_pages = [pages[0]] + pages[2::2]
-            
-            print(f"Processing {reg_no}: {len(pages)} total pages, using {len(selected_pages)} pages")
-            
-            images = []
-            for p in selected_pages:
-                # ✅ Optimized DPI for better performance
-                pix = pdf[p].get_pixmap(dpi=120)
-                img = Image.open(io.BytesIO(pix.tobytes("png")))
-                images.append(img)
+    for reg_no, pages in student_chunks:
+        images = []
 
-            if len(images) == 1:
-                # Single page - no combining needed
-                combined = images[0]
-            else:
-                # ✅ Combine multiple pages vertically
-                total_height = sum(img.height for img in images)
-                max_width = max(img.width for img in images)
-                combined = Image.new("RGB", (max_width, total_height), (255, 255, 255))
-                
-                y_offset = 0
-                for img in images:
-                    # Center the image if widths differ
-                    x_offset = (max_width - img.width) // 2
-                    combined.paste(img, (x_offset, y_offset))
-                    y_offset += img.height
-
-            # ✅ Generate unique filename
-            filename = f"{reg_no}_{uuid4().hex[:6]}.jpg"
-            path = os.path.join(OUTPUT_DIR, filename)
-            
-            # ✅ Save with compression for smaller file sizes
-            combined.save(path, "JPEG", quality=85, optimize=True)
-
-            # ✅ Construct the public URL to serve this file
-            public_url = f"https://pdf-to-images-srmproject.onrender.com/output/{filename}"
-
-            result.append({ 
-                "regNo": reg_no, 
-                "imagePath": public_url,
-                "pagesProcessed": len(selected_pages),
-                "totalPages": len(pages)
-            })
-
-        pdf.close()
-        
-        return JSONResponse(content={ 
-            "status": "success", 
-            "images": result,
-            "totalStudents": len(result)
-        })
-        
-    except Exception as e:
-        print(f"Error processing PDF: {str(e)}")
-        return JSONResponse(
-            content={"status": "error", "message": str(e)}, 
-            status_code=500
-        )
-
-# ✅ Alternative endpoint for single page processing (faster)
-@app.post("/split-pdf-fast")
-async def split_pdf_fast(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        pdf = fitz.open(stream=contents, filetype="pdf")
-
-        student_chunks = []
-        current_chunk = []
-        current_reg = None
-
-        regno_pattern = re.compile(r"Registration\s*Number\s*:\s*(RA\d+)", re.IGNORECASE)
-
-        for page_num in range(len(pdf)):
-            page = pdf[page_num]
-            text = page.get_text()
-
-            match = regno_pattern.search(text)
-            if match:
-                if current_chunk and current_reg:
-                    student_chunks.append((current_reg, current_chunk.copy()))
-                current_reg = match.group(1)
-                current_chunk = [page_num]
-            else:
-                if current_reg:
-                    current_chunk.append(page_num)
-
-        if current_chunk and current_reg:
-            student_chunks.append((current_reg, current_chunk.copy()))
-
-        result = []
-
-        for reg_no, pages in student_chunks:
-            # ✅ FAST METHOD: Process only the first page
-            target_page = pages[0]
-            
-            pix = pdf[target_page].get_pixmap(dpi=120)
+        for p in pages:
+            pix = pdf[p].get_pixmap(dpi=IMAGE_DPI)
             img = Image.open(io.BytesIO(pix.tobytes("png")))
-            
-            filename = f"{reg_no}_{uuid4().hex[:6]}.jpg"
-            path = os.path.join(OUTPUT_DIR, filename)
-            img.save(path, "JPEG", quality=85, optimize=True)
+            images.append(img)
 
-            public_url = f"https://pdf-to-images-srmproject.onrender.com/output/{filename}"
+        if not images:
+            continue
 
-            result.append({ 
-                "regNo": reg_no, 
-                "imagePath": public_url,
-                "pagesProcessed": 1,
-                "totalPages": len(pages)
-            })
+        total_height = sum(img.height for img in images)
+        combined = Image.new("RGB", (images[0].width, total_height), (255, 255, 255))
 
-        pdf.close()
-        
-        return JSONResponse(content={ 
-            "status": "success", 
-            "images": result,
-            "totalStudents": len(result)
-        })
-        
-    except Exception as e:
-        print(f"Error processing PDF: {str(e)}")
-        return JSONResponse(
-            content={"status": "error", "message": str(e)}, 
-            status_code=500
-        )
+        y_offset = 0
+        for img in images:
+            combined.paste(img, (0, y_offset))
+            y_offset += img.height
+
+        # Crop vertically to reduce size (optional, here crops half)
+        cropped_height = int(combined.height* 1.2/ 2)
+        combined = combined.crop((0, 0, combined.width, cropped_height))
+
+        filename = f"{reg_no}_{uuid4().hex[:6]}.jpg"
+        path = os.path.join(OUTPUT_DIR, filename)
+
+        # Save to buffer to check file size
+        img_byte_arr = io.BytesIO()
+        combined.save(img_byte_arr, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        img_byte_arr_size = img_byte_arr.tell()
+
+        # If too large, retry with lower quality
+        if img_byte_arr_size > MAX_FILE_SIZE_BYTES:
+            print(f"Warning: {filename} is too large ({img_byte_arr_size} bytes). Retrying with lower quality.")
+            img_byte_arr = io.BytesIO()
+            combined.save(img_byte_arr, format="JPEG", quality=50, optimize=True)
+            img_byte_arr_size = img_byte_arr.tell()
+            print(f"New size for {filename}: {img_byte_arr_size} bytes")
+
+        # Write image to file
+        with open(path, "wb") as f:
+            f.write(img_byte_arr.getvalue())
+
+        # MODIFIED LINE: Use the dynamic BASE_URL
+        public_url = f"{BASE_URL}/output/{filename}" 
+        result.append({ "regNo": reg_no, "imagePath": public_url })
+
+    return JSONResponse(content={ "status": "success", "images": result })
+
